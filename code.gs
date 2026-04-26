@@ -156,6 +156,57 @@ function hashPassword(input) {
 }
 
 /**
+ * NORMALISASI JUDUL DARI NAMA FILE
+ * Menghapus noise (resolusi, codec, sumber, tag), mengekstrak tahun,
+ * dan mengembalikan { query, year } yang siap dikirim ke TMDB.
+ */
+function normalizeTitle(raw) {
+  let name = raw;
+
+  // 1. Hapus ekstensi file
+  name = name.replace(/\.[^/.]+$/, '');
+
+  // 2. Ganti pemisah (titik, underscore, tanda hubung) → spasi
+  name = name.replace(/[._]/g, ' ').replace(/-/g, ' ');
+
+  // 3. Ekstrak tahun (1900-2029) sebelum dihapus
+  const yearMatch = name.match(/\b(19\d{2}|20[012]\d)\b/);
+  const year = yearMatch ? yearMatch[1] : '';
+  if (year) name = name.replace(year, ' ');
+
+  // 4. Hapus tag resolusi & format video
+  name = name.replace(/\b(4k|2160p|1080p|1080i|720p|720i|480p|576p|hd|fhd|uhd)\b/gi, ' ');
+
+  // 5. Hapus tag sumber/rip
+  name = name.replace(/\b(bluray|blu[\s-]?ray|bdrip|brrip|webdl|web[\s-]?dl|webrip|web[\s-]?rip|hdrip|dvdrip|dvd|hdtv|pdtv|dsr|tvrip|hdcam|ts|cam|hc|scr|r5)\b/gi, ' ');
+
+  // 6. Hapus tag codec video & audio
+  name = name.replace(/\b(x264|x265|h264|h265|h\.264|h\.265|hevc|avc|xvid|divx|vp9|av1)\b/gi, ' ');
+  name = name.replace(/\b(aac|ac3|dts|mp3|flac|atmos|truehd|dd5\.?1|ddp5\.?1|eac3|pcm|opus)\b/gi, ' ');
+
+  // 7. Hapus tag release/distribusi
+  name = name.replace(/\b(extended|remastered|theatrical|directors\.?cut|unrated|proper|repack|remux|complete|retail|limited|internal|readnfo|dubbed|subbed|sub|multi|dual|audio)\b/gi, ' ');
+
+  // 8. Hapus tag bahasa
+  name = name.replace(/\b(english|hindi|korean|japanese|chinese|indonesian|malay|arabic|french|spanish|german)\b/gi, ' ');
+
+  // 9. Hapus tanda kurung sisa — [tag] atau (tag) yang tidak mengandung huruf judul bermakna
+  name = name.replace(/[\[(][^\])\w]*[\])]/g, ' ');
+  name = name.replace(/[\[(][^\])]{1,12}[\])]/g, ' ');
+
+  // 10. Hapus karakter khusus yang tersisa (kecuali huruf, angka, spasi, apostrof, titik dua)
+  name = name.replace(/[^a-zA-Z0-9À-ÿ ':]/g, ' ');
+
+  // 11. Bersihkan spasi ganda & trim
+  name = name.replace(/\s{2,}/g, ' ').trim();
+
+  // 12. Title Case agar hasil lebih natural & konsisten
+  name = name.toLowerCase().replace(/(?:^|\s)\S/g, c => c.toUpperCase());
+
+  return { query: name, year };
+}
+
+/**
  * PENGAMBILAN METADATA TMDB
  * Mendukung film biasa dan serial TV (episode)
  */
@@ -163,26 +214,26 @@ function fetchTMDBMetadata(fileName) {
   try {
     let cleanName = fileName.replace(/\.[^/.]+$/, '');
 
-    // Ekstrak nomor episode dari nama file asli
+    // Ekstrak nomor episode dari nama file ASLI (sebelum normalisasi)
     const epNumMatch = cleanName.match(/(?:episode\s*|ep\.?\s*)(\d+)\b/i)
       || cleanName.match(/\bs\d{1,2}\s*e(\d{1,2})\b/i)
       || cleanName.match(/\be(\d{1,2})\b/i);
     const episodeNum = epNumMatch ? parseInt(epNumMatch[1]) : '';
 
-    // Deteksi pola episode/season
+    // Deteksi pola episode/season dari nama ASLI
     const episodePattern = /\b(s\d{1,2}\s*e\d{1,2}|season\s*\d+|episode\s*\d+|ep\.?\s*\d+|\be\d{1,2}\b)/i;
     const isSeries = episodePattern.test(cleanName);
 
-    // Bersihkan pola episode agar query TMDB lebih akurat
+    // Hapus pola episode sebelum normalisasi
     cleanName = cleanName
       .replace(/\bs\d{1,2}\s*e\d{1,2}\b/gi, '')
       .replace(/\bseason\s*\d+\b/gi, '')
       .replace(/\bepisode\s*\d+\b/gi, '')
       .replace(/\bep\.?\s*\d+\b/gi, '')
-      .replace(/\be\d{1,2}\b/gi, '')
-      .replace(/[._-]/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
+      .replace(/\be\d{1,2}\b/gi, '');
+
+    // Normalisasi judul lengkap
+    const { query: baseQuery, year } = normalizeTitle(cleanName);
 
     const apiKey = CONFIG.TMDB_API_KEY;
     const base   = 'https://api.themoviedb.org/3';
@@ -191,32 +242,49 @@ function fetchTMDBMetadata(fileName) {
       ? [`${base}/search/tv`, `${base}/search/movie`]
       : [`${base}/search/movie`, `${base}/search/tv`];
 
+    // Strategi multi-attempt: (1) query+tahun, (2) query saja, (3) query dipangkas 1 kata
+    const queries = [
+      year ? baseQuery + ' ' + year : null,
+      baseQuery,
+      baseQuery.split(' ').slice(0, -1).join(' ')   // hilangkan kata terakhir
+    ].filter(q => q && q.trim().length > 1);
+
     for (const endpoint of endpoints) {
-      const url = `${endpoint}?api_key=${apiKey}&query=${encodeURIComponent(cleanName)}&language=id-ID`;
-      const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-      const results  = JSON.parse(response.getContentText()).results;
+      const yearParam = endpoint.includes('/tv') ? 'first_air_date_year' : 'year';
 
-      if (results && results.length > 0) {
-        const item        = results[0];
-        const genres      = (item.genre_ids || [])
-          .slice(0, 3)
-          .map(id => GENRE_MAP[id] || '')
-          .filter(Boolean)
-          .join(',');
-        const title       = item.title || item.name || '';
-        const releaseDate = item.release_date || item.first_air_date || '';
-        const isTV        = !item.title && !!item.name;
+      for (const q of queries) {
+        // Ekstrak tahun dari query jika sudah ditempel, lalu susun param terpisah
+        const qYear  = (year && q.endsWith(year)) ? year : '';
+        const qClean = qYear ? q.slice(0, -year.length).trim() : q;
 
-        return {
-          title:       title,
-          poster:      item.poster_path,
-          rating:      item.vote_average,
-          overview:    item.overview,
-          year:        releaseDate ? releaseDate.split('-')[0] : '',
-          genres:      genres,
-          episodeNum:  episodeNum,
-          seriesTitle: (isTV || isSeries) ? title : ''
-        };
+        let url = `${endpoint}?api_key=${apiKey}&query=${encodeURIComponent(qClean)}&language=id-ID`;
+        if (qYear) url += `&${yearParam}=${qYear}`;
+
+        const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+        const results  = JSON.parse(response.getContentText()).results;
+
+        if (results && results.length > 0) {
+          const item        = results[0];
+          const genres      = (item.genre_ids || [])
+            .slice(0, 3)
+            .map(id => GENRE_MAP[id] || '')
+            .filter(Boolean)
+            .join(',');
+          const title       = item.title || item.name || '';
+          const releaseDate = item.release_date || item.first_air_date || '';
+          const isTV        = !item.title && !!item.name;
+
+          return {
+            title:       title,
+            poster:      item.poster_path,
+            rating:      item.vote_average,
+            overview:    item.overview,
+            year:        releaseDate ? releaseDate.split('-')[0] : (year || ''),
+            genres:      genres,
+            episodeNum:  episodeNum,
+            seriesTitle: (isTV || isSeries) ? title : ''
+          };
+        }
       }
     }
   } catch (e) {
