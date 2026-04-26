@@ -3,7 +3,7 @@
  * Strategi: Cache-First untuk aset statis, Network-First untuk API Apps Script.
  */
 
-const CACHE_NAME   = 'drivestream-v1';
+const CACHE_NAME   = 'drivestream-v2';
 const OFFLINE_URL  = './index.html';
 
 // Aset yang di-cache saat install (app shell)
