@@ -4,14 +4,15 @@
  */
 
 const CACHE_NAME   = 'drivestream-v1';
-const OFFLINE_URL  = '/index.html';
+const OFFLINE_URL  = './index.html';
 
 // Aset yang di-cache saat install (app shell)
+// Path relatif agar bekerja di subdirektori manapun (mis. /film-apps/)
 const PRECACHE = [
-  '/index.html',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png'
+  './index.html',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png'
 ];
 
 // Host yang selalu di-fetch live (tidak pernah dari cache)
